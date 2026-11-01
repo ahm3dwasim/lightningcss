@@ -13413,6 +13413,66 @@ mod tests {
   }
 
   #[test]
+  fn test_transform_origin() {
+    // https://github.com/parcel-bundler/lightningcss/issues/1403
+    for (a, b) in [
+      ("left top 30px", "0 0 30px"),
+      ("top left 30px", "0 0 30px"),
+      ("center top 30px", "50% 0 30px"),
+      ("center left 10px", "0 50% 10px"),
+      ("right bottom 30px", "100% 100% 30px"),
+      ("0% 0% 30px", "0 0 30px"),
+      ("10px 20px 30px", "10px 20px 30px"),
+      ("0 0 0", "0 0"),
+      ("0 0 30px", "0 0 30px"),
+      ("10px top 30px", "10px 0 30px"),
+      ("left top 0px", "0 0"),
+      ("left top", "0 0"),
+      ("top", "top"),
+      ("center top", "top"),
+      ("left", "0"),
+      ("left center", "0"),
+      ("10px", "10px"),
+    ] {
+      minify_test(
+        &format!(".a{{transform-origin:{}}}", a),
+        &format!(".a{{transform-origin:{}}}", b),
+      );
+    }
+
+    // Side offsets, z without y, and out of order keywords are invalid.
+    for v in [
+      "left 10px center",
+      "left top 10px 20px",
+      "left right",
+      "top bottom",
+      "left 10px top",
+      "top 10px",
+    ] {
+      let css = format!(".a{{transform-origin:{}}}", v);
+      minify_test(&css, &css);
+    }
+  }
+
+  #[test]
+  fn test_transform_origin_unitless_x() {
+    property_range_test(&["transform-origin"], &[("1 top", None), ("0 top", Some("0 0"))]);
+  }
+
+  #[test]
+  fn test_transform_origin_unitless_y() {
+    property_range_test(&["transform-origin"], &[("left 2", None), ("left 0", Some("0 0"))]);
+  }
+
+  #[test]
+  fn test_transform_origin_unitless_z() {
+    property_range_test(
+      &["transform-origin", "-webkit-transform-origin"],
+      &[("left top 3", None), ("left top 0", Some("0 0"))],
+    );
+  }
+
+  #[test]
   fn test_transform() {
     property_range_test(
       &["transform"],

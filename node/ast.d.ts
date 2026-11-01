@@ -3382,7 +3382,7 @@ export type Declaration =
     }
   | {
       property: "transform-origin";
-      value: Position;
+      value: TransformOrigin;
       vendorPrefix: VendorPrefix;
     }
   | {
@@ -7999,6 +7999,21 @@ export interface Position {
    * The y-position.
    */
   y: PositionComponentFor_VerticalPositionKeyword;
+}
+/**
+ * A value for the [transform-origin](https://drafts.csswg.org/css-transforms/#transform-origin-property) property.
+ *
+ * Unlike `<position>`, side keywords cannot have offsets, and an optional `z` length may follow.
+ */
+export interface TransformOrigin {
+  /**
+   * The x and y position.
+   */
+  position: Position;
+  /**
+   * The z offset. `None` means zero.
+   */
+  z?: Length | null;
 }
 /**
  * An x/y position within a legacy `-webkit-gradient()`.

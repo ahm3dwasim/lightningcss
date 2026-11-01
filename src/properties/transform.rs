@@ -12,7 +12,8 @@ use crate::values::number::NonNegative;
 use crate::values::{
   angle::Angle,
   length::{Length, LengthPercentage},
-  percentage::NumberOrPercentage,
+  percentage::{NumberOrPercentage, Percentage},
+  position::{HorizontalPosition, HorizontalPositionKeyword, Position, VerticalPosition, VerticalPositionKeyword},
 };
 use crate::vendor_prefix::VendorPrefix;
 #[cfg(feature = "visitor")]
@@ -1824,5 +1825,184 @@ impl TransformHandler {
     if let Some(scale) = scale {
       dest.push(Property::Scale(scale))
     }
+  }
+}
+
+/// A value for the [transform-origin](https://drafts.csswg.org/css-transforms/#transform-origin-property) property.
+///
+/// Unlike `<position>`, side keywords cannot have offsets, and an optional `z` length may follow.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "visitor", derive(Visit))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "jsonschema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "into_owned", derive(static_self::IntoOwned))]
+pub struct TransformOrigin {
+  /// The x and y position.
+  pub position: Position,
+  /// The z offset. `None` means zero.
+  pub z: Option<Length>,
+}
+
+enum OriginComponent {
+  Left,
+  Right,
+  Top,
+  Bottom,
+  Center,
+  Length(LengthPercentage),
+}
+
+fn reject_nonzero_origin_number<'i>(input: &mut Parser<'i, '_>) -> Result<(), ParseError<'i, ParserError<'i>>> {
+  let location = input.current_source_location();
+  let state = input.state();
+  let token = input.next()?.clone();
+  input.reset(&state);
+  if matches!(token, Token::Number { value, .. } if value != 0.0) {
+    return Err(location.new_unexpected_token_error(token));
+  }
+  Ok(())
+}
+
+impl OriginComponent {
+  fn parse<'i, 't>(input: &mut Parser<'i, 't>) -> Result<Self, ParseError<'i, ParserError<'i>>> {
+    reject_nonzero_origin_number(input)?;
+    if let Ok(lp) = input.try_parse(LengthPercentage::parse) {
+      return Ok(OriginComponent::Length(lp));
+    }
+    let location = input.current_source_location();
+    let ident = input.expect_ident()?;
+    match_ignore_ascii_case! { &*ident,
+      "left" => Ok(OriginComponent::Left),
+      "right" => Ok(OriginComponent::Right),
+      "top" => Ok(OriginComponent::Top),
+      "bottom" => Ok(OriginComponent::Bottom),
+      "center" => Ok(OriginComponent::Center),
+      _ => Err(location.new_unexpected_token_error(Token::Ident(ident.clone())))
+    }
+  }
+
+  fn into_x(self) -> Option<HorizontalPosition> {
+    Some(match self {
+      OriginComponent::Left => HorizontalPosition::Side {
+        side: HorizontalPositionKeyword::Left,
+        offset: None,
+      },
+      OriginComponent::Right => HorizontalPosition::Side {
+        side: HorizontalPositionKeyword::Right,
+        offset: None,
+      },
+      OriginComponent::Center => HorizontalPosition::Center,
+      OriginComponent::Length(lp) => HorizontalPosition::Length(lp),
+      _ => return None,
+    })
+  }
+
+  fn into_y(self) -> Option<VerticalPosition> {
+    Some(match self {
+      OriginComponent::Top => VerticalPosition::Side {
+        side: VerticalPositionKeyword::Top,
+        offset: None,
+      },
+      OriginComponent::Bottom => VerticalPosition::Side {
+        side: VerticalPositionKeyword::Bottom,
+        offset: None,
+      },
+      OriginComponent::Center => VerticalPosition::Center,
+      OriginComponent::Length(lp) => VerticalPosition::Length(lp),
+      _ => return None,
+    })
+  }
+}
+
+impl<'i> Parse<'i> for TransformOrigin {
+  fn parse<'t>(input: &mut Parser<'i, 't>) -> Result<Self, ParseError<'i, ParserError<'i>>> {
+    let location = input.current_source_location();
+    let first = OriginComponent::parse(input)?;
+    let second = input.try_parse(OriginComponent::parse).ok();
+    let has_second = second.is_some();
+
+    let position = match second {
+      None => match first {
+        OriginComponent::Top | OriginComponent::Bottom => Position {
+          x: HorizontalPosition::Center,
+          y: first.into_y().unwrap(),
+        },
+        _ => Position {
+          x: first.into_x().unwrap(),
+          y: VerticalPosition::Center,
+        },
+      },
+      Some(second) => {
+        // Either `<x> <y>` or, with keywords, `<y> <x>`.
+        let in_order = |first: OriginComponent, second: OriginComponent| {
+          Some(Position {
+            x: first.into_x()?,
+            y: second.into_y()?,
+          })
+        };
+        let first_is_y_keyword = matches!(first, OriginComponent::Top | OriginComponent::Bottom);
+        let second_is_x_keyword = matches!(second, OriginComponent::Left | OriginComponent::Right);
+        let pos = if first_is_y_keyword || (matches!(first, OriginComponent::Center) && second_is_x_keyword) {
+          in_order(second, first)
+        } else {
+          in_order(first, second)
+        };
+        match pos {
+          // A length is not allowed in the second position of a swapped pair, e.g. `top 10px`.
+          Some(p) if !(first_is_y_keyword && matches!(p.x, HorizontalPosition::Length(_))) => p,
+          _ => return Err(location.new_custom_error(ParserError::InvalidValue)),
+        }
+      }
+    };
+
+    let z = if has_second {
+      input
+        .try_parse(|input| {
+          reject_nonzero_origin_number(input)?;
+          Length::parse(input)
+        })
+        .ok()
+    } else {
+      None
+    };
+
+    Ok(TransformOrigin { position, z })
+  }
+}
+
+impl ToCss for TransformOrigin {
+  fn to_css<W>(&self, dest: &mut Printer<W>) -> Result<(), PrinterError>
+  where
+    W: std::fmt::Write,
+  {
+    let z = self.z.as_ref().filter(|z| !z.is_zero());
+    let z = match z {
+      None => return self.position.to_css(dest),
+      Some(z) => z,
+    };
+
+    // The z offset requires explicit x and y values.
+    fn x_lp(x: &HorizontalPosition) -> LengthPercentage {
+      match x {
+        HorizontalPosition::Center => LengthPercentage::Percentage(Percentage(0.5)),
+        HorizontalPosition::Length(lp) => lp.clone(),
+        HorizontalPosition::Side { side, offset } => offset.clone().unwrap_or_else(|| (*side).into()),
+      }
+    }
+    fn y_lp(y: &VerticalPosition) -> LengthPercentage {
+      match y {
+        VerticalPosition::Center => LengthPercentage::Percentage(Percentage(0.5)),
+        VerticalPosition::Length(lp) => lp.clone(),
+        VerticalPosition::Side { side, offset } => offset.clone().unwrap_or_else(|| (*side).into()),
+      }
+    }
+
+    let x = x_lp(&self.position.x);
+    let y = y_lp(&self.position.y);
+    if x.is_zero() { LengthPercentage::zero() } else { x }.to_css(dest)?;
+    dest.write_char(' ')?;
+    if y.is_zero() { LengthPercentage::zero() } else { y }.to_css(dest)?;
+    dest.write_char(' ')?;
+    z.to_css(dest)
   }
 }
